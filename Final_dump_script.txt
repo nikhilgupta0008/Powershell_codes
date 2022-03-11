@@ -1,0 +1,115 @@
+import-Module SQLPS
+
+# To list the files from s3 bucket
+
+$BucketName = 'dt-dbscrub-poc-source'
+
+Get-S3Object -BucketName $BucketName
+
+$Params = @{
+BucketName = $BucketName
+Key = 'Unscrubbed-Debttrakker-dbbackup.tar.gz'
+}
+Get-S3Object @Params
+
+# To download files from s3
+
+$Params2 = @{
+BucketName = $BucketName
+Key = 'Unscrubbed-Debttrakker-dbbackup.tar.gz'
+File = 'C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Unscrubbed-Debttrakker-dbbackup.tar.gz'
+}
+Read-S3Object @Params2
+
+# Fucntion for extraction
+
+function Expand-Tar($tarfile, $dest) {
+
+$pathToModule = ".\C:\Program Files\WindowsPowerShell\Modules\7Zip4Powershell\2.1.0\7Zip4Powershell.psd1"
+
+if (-not (Get-Command Expand-7Zip -ErrorAction Ignore)) {
+import-Module $pathToModule
+}
+
+Expand-7Zip $tarFile $dest
+}
+
+Start-Sleep -Seconds 5
+
+Expand-Tar C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Unscrubbed-Debttrakker-dbbackup.tar.gz C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\
+
+Start-Sleep -Seconds 5
+
+Expand-Tar C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Unscrubbed-Debttrakker-dbbackup.tar C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\
+
+Start-Sleep -Seconds 5
+
+# Removing Tars:
+
+Remove-Item –path C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Unscrubbed-Debttrakker-dbbackup.tar.gz
+Remove-Item –path C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Unscrubbed-Debttrakker-dbbackup.tar
+Remove-Item –path C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Debttrakker_LCS_scrubbed.bak
+
+# Restoring Database
+
+$instance = 'EC2AMAZ-CFGIFHE'
+
+$RelocateData = New-Object Microsoft.SqlServer.Management.Smo.RelocateFile("DebtTrakker_Data", "C:\Users\Administrator\Desktop\sc\DB_DATA\MainDB.mdf")
+$RelocateLog = New-Object Microsoft.SqlServer.Management.Smo.RelocateFile("DebtTrakker_Log", "C:\Users\Administrator\Desktop\sc\DB_LOG\MainDB.ldf")
+
+Restore-SqlDatabase -ServerInstance $instance -Database "Unscrubbed_Debttrakker_db" -BackupFile "C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Debttrakker_scrubbed.bak" -RelocateFile @($RelocateData,$RelocateLog)
+
+
+# Removing dumps
+
+Remove-Item –path C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Debttrakker_scrubbed.bak
+
+# Data Scrubbing
+
+Write-Host  "starting"
+push-location
+
+invoke-sqlcmd -serverinstance $instance -database "Unscrubbed_Debttrakker_db" -Querytimeout 2000 -inputfile "C:\Users\Administrator\Desktop\sc\sscrubb.sql"
+
+
+pop-location
+Write-Host  "complete"
+
+# Database Dump
+
+Backup-SqlDatabase -ServerInstance $instance -database "Unscrubbed_Debttrakker_db"
+
+# Zipping the dump
+
+function Compress-Tar($tarfile, $dest) {
+
+$pathToModule = ".\C:\Program Files\WindowsPowerShell\Modules\7Zip4Powershell\2.1.0\7Zip4Powershell.psd1"
+
+if (-not (Get-Command Expand-7Zip -ErrorAction Ignore)) {
+import-Module $pathToModule
+}
+
+Compress-7Zip $tarFile $dest
+}
+
+Compress-Tar C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Unscrubbed_Debttrakker_dbbackup.tar.gz C:\PROGRA~1\MICROS~1\MSSQL1~1.MSS\MSSQL\Backup\Unscrubbed_Debttrakker_db.bak
+
+# Uploading dump to target s3
+
+Write-S3Object -BucketName dt-dbscrub-poc-target -File C:\Users\Administrator\Desktop\sc\Unscrubbed-Debttrakker\Unscrubbed_Debttrakker_dbbackup.tar.gz
+
+# Dropping Database
+
+$database = 'Unscrubbed_Debttrakker_db'
+
+Try{
+    invoke-sqlcmd -ServerInstance "$instance" -Query "Drop database $database;"
+}Catch{
+      Write-Output 'Failed to delete database'
+}
+
+# Printing final status:
+
+$P = "PROCESS COMPLETED..!!!"
+Write-Output $P
+
